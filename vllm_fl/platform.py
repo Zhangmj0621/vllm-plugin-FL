@@ -46,7 +46,7 @@ class PlatformFL(Platform):
     dispatch_key = device_info.dispatch_key
     torch_device_fn = device_info.torch_device_fn
     vendor_name = device_info.vendor_name
-    ray_device_key: str = "GPU"
+    ray_device_key: str = "flagos"
     dist_backend: str = "flagcx" if "FLAGCX_PATH" in os.environ else "nccl"
     ### TODO(lms): dispatch device_control_env_var
     # device_control_env_var: str = "CUDA_VISIBLE_DEVICES"
@@ -170,12 +170,14 @@ class PlatformFL(Platform):
         from vllm_fl.dispatch import call_op
 
         use_mla = attn_selector_config.use_mla
+        use_sparse = attn_selector_config.use_sparse
 
-        backend_path = call_op("attention_backend", use_mla=use_mla)
+        backend_path = call_op("attention_backend", use_mla=use_mla, use_sparse=use_sparse)
 
         logger.info_once(
-            "Using attention backend via dispatch (use_mla=%s): %s",
+            "Using attention backend via dispatch (use_mla=%s, use_sparse=%s): %s",
             use_mla,
+            use_sparse,
             backend_path,
             scope="local",
         )

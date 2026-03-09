@@ -118,12 +118,13 @@ class FlagGemsBackend(Backend):
             inplace=inplace,
         )
 
-    def attention_backend(self, use_mla: bool = False) -> str:
+    def attention_backend(self, use_mla: bool = False, use_sparse: bool = False) -> str:
         """
         Get the attention backend class path for FlagGems.
 
         Args:
             use_mla: Whether to use Multi-head Latent Attention (MLA)
+            use_sparse: Whether to use Deepseek Sparse Attention (DSA)
 
         Returns:
             Fully qualified class path string
@@ -139,5 +140,8 @@ class FlagGemsBackend(Backend):
 
         if use_mla:
             raise NotImplementedError("NOT support mla now!")
+
+        if use_sparse:
+            raise ValueError("use_sparse=True requires use_mla=True.")  
 
         return AttentionBackendEnum.TRITON_ATTN.get_path()

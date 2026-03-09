@@ -131,12 +131,13 @@ class MetaxBackend(Backend):
             inplace=inplace,
         )
 
-    def attention_backend(self, use_mla: bool = False) -> str:
+    def attention_backend(self, use_mla: bool = False, use_sparse: bool = False) -> str:
         """
         Get the attention backend class path for METAX.
 
         Args:
             use_mla: Whether to use Multi-head Latent Attention (MLA)
+            use_sparse: Whether to use Deepseek Sparse Attention (DSA)
 
         Returns:
             Fully qualified class path string
@@ -144,6 +145,9 @@ class MetaxBackend(Backend):
         from vllm.attention.backends.registry import AttentionBackendEnum
 
         if use_mla:
+            if use_sparse:
+                # TODO: Implement METAX MLA Sparse backend
+                return AttentionBackendEnum.FLASHMLA_SPARSE.get_path()
             # TODO: Implement METAX MLA backend
             return AttentionBackendEnum.FLASHMLA.get_path()
 
