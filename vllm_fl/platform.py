@@ -31,6 +31,7 @@ else:
     CacheDType = None
 
 from vllm_fl.utils import DeviceInfo
+from vllm_fl.vllmfl_config import init_vllm_fl_config
 
 logger = init_logger(__name__)
 
@@ -106,6 +107,9 @@ class PlatformFL(Platform):
 
     @classmethod
     def check_and_update_config(cls, vllm_config: "VllmConfig") -> None:
+        # initialize vllm-fl specific config
+        init_vllm_fl_config(vllm_config)
+        
         parallel_config = vllm_config.parallel_config
         model_config = vllm_config.model_config
 

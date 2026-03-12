@@ -68,6 +68,7 @@ import vllm_fl.envs as fl_envs
 
 from vllm_fl.utils import get_flag_gems_whitelist_blacklist
 from vllm_fl.ops.custom_ops import register_oot_ops
+from vllm_fl.distributed.parallel_state import init_fl_model_parallel
 
 logger = init_logger(__name__)
 
@@ -1086,4 +1087,5 @@ def init_worker_distributed_environment(
 
     # Init ec connector here before KV caches caches init
     # NOTE: We do not init KV caches for Encoder-only instance in EPD disagg mode
+    init_fl_model_parallel(parallel_config)
     ensure_ec_transfer_initialized(vllm_config)

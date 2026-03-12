@@ -2,7 +2,9 @@
 
 import json
 import os
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any
+import torch
+from functools import lru_cache
 
 import flag_gems
 from flag_gems.runtime.backend.device import DeviceDetector
@@ -263,6 +265,38 @@ def is_oot_enabled() -> bool:
     enabled_str = os.environ.get("VLLM_FL_OOT_ENABLED", "1")
     return enabled_str.lower() in ("1", "true")
 
+
+def dispose_tensor(x: torch.Tensor):
+    x.set_(torch.empty((0,), device=x.device, dtype=x.dtype))
+
+def dispose_layer(layer: Any):
+    for attr_name in dir(layer):
+        attr_value = getattr(layer, attr_name)
+        if isinstance(attr_value, torch.Tensor):
+            dispose_tensor(attr_value)
+
+# TODO: Temporarily use dsa-cp at default.
+# and subsequent updates will introduce new interfaces.
+@lru_cache(maxsize=1)
+def enable_dsa_cp() -> bool:
+    from vllm.config import get_current_vllm_config
+
+    vllm_config = get_current_vllm_config()
+    is_ds_v32 = hasattr(vllm_config.model_config, "hf_text_config") and hasattr(
+        vllm_config.model_config.hf_text_config, "index_topk"
+    )
+    return bool(is_ds_v32)
+
+
+@lru_cache(maxsize=1)
+def enable_dsa_cp_with_layer_shard() -> bool:
+    if not enable_dsa_cp():
+        return False
+    from vllm.config import get_current_vllm_config
+
+    vllm_config = get_current_vllm_config()
+    is_prefill_instance = vllm_config.kv_transfer_config is not None and vllm_config.kv_transfer_config.is_kv_producer
+    return is_prefill_instance
 
 if __name__ == "__main__":
     device = DeviceInfo()
