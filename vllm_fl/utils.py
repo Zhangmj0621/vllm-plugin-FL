@@ -298,5 +298,15 @@ def enable_dsa_cp_with_layer_shard() -> bool:
     is_prefill_instance = vllm_config.kv_transfer_config is not None and vllm_config.kv_transfer_config.is_kv_producer
     return is_prefill_instance
 
+def enable_dsa_cp_with_o_proj_tp() -> bool:
+    if not enable_dsa_cp():
+        return False
+    from vllm.config import get_current_vllm_config
+
+    vllm_config = get_current_vllm_config()
+    # if is PD mix stage, using original TP o_proj weight, and also need to
+    # full gather for o_proj weight for prefill stage.
+    return vllm_config.kv_transfer_config is None
+
 if __name__ == "__main__":
     device = DeviceInfo()

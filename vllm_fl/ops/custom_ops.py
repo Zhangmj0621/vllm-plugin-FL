@@ -8,6 +8,7 @@ from .layernorm import *  # noqa F403 F401
 from .activation import *  # noqa F403 F401
 from .rotary_embedding import *  # noqa F403 F401
 from .fused_moe import *  # noqa F403 F401
+from .mla import *  # noqa F403 F401
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,10 @@ OOT_OPS = {
     "unquantized_fused_moe_method": (
         UnquantizedFusedMoEMethodFL,  # noqa F405
         "UnquantizedFusedMoEMethod",
+    ),
+    "MultiHeadLatentAttentionWrapper": (
+        FLMultiHeadLatentAttention, # noqa F405
+        "MultiHeadLatentAttentionWrapper",
     ),
 }
 

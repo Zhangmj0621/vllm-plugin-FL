@@ -5,6 +5,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import ClassVar
 
 import numpy as np
@@ -154,6 +155,13 @@ class AttentionFLBackend(AttentionBackend):
         if has_sink:
             return "not support sink"
         return None
+    
+class AttentionFLState(Enum):
+    PrefillNoCache = 0
+    PrefillCacheHit = 1
+    DecodeOnly = 2
+    ChunkedPrefill = 3
+    SpecDecoding = 4
 
 @dataclass
 class AttentionFLMetadata:
