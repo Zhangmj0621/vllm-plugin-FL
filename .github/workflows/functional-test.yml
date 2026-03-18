@@ -72,7 +72,6 @@ jobs:
       - name: Run inference tests
         run: |
           pytest tests/functional_tests/inference/ \
-            --ignore=tests/functional_tests/inference/test_offline_qwen3_next.py \
             -v --tb=short -s
 
       - name: Run serving tests
