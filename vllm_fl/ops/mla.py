@@ -146,12 +146,15 @@ def mla_forward(
     else:
         attn_metadata = forward_context.attn_metadata
     kv_cache = self.mla_attn.kv_cache[forward_context.virtual_engine]
+    # TODO: we now don't support cache config
+    assert self.mla_attn.cache_config is None, "Cache config is not supported in FL now."
     self.mla_attn.impl.forward(
         self.mla_attn.layer_name,
         hidden_states,
         kv_cache,
         attn_metadata,
         output,
+        self.mla_attn._k_scale,
     )
     return
 

@@ -43,6 +43,11 @@ from flag_gems import flash_attn_varlen_func, reshape_and_cache_flash
 # from vllm.attention.utils.fa_utils import flash_attn_varlen_func #reshape_and_cache_flash,
 # from flag_gems import reshape_and_cache_flash
 
+from vllm_fl.dispatch.backends.flaggems.impl.utils import (
+    FLCommonAttentionMetadata,
+    split_decodes_and_prefills,
+)
+
 logger = init_logger(__name__)
 
 
@@ -153,7 +158,7 @@ class AttentionFLBackend(AttentionBackend):
         if has_sink:
             return "not support sink"
         return None
-    
+
 class AttentionFLState(Enum):
     PrefillNoCache = 0
     PrefillCacheHit = 1
@@ -171,7 +176,17 @@ class AttentionFLMetadata:
     # |-------------------- seq_len ---------------------|
     #                                   |-- query_len ---|
 
-    num_actual_tokens: int  # Number of tokens excluding padding.
+    # Current state of this attention run.
+    attn_state: AttentionFLState = AttentionFLState.ChunkedPrefill
+
+    # Number of tokens excluding padding.
+    num_actual_tokens_pcp_padded: int = 0
+    num_actual_tokens: int = 0
+    num_decode_tokens: int = 0
+    num_prefills: int = 0
+    num_decodes: int = 0
+    num_decodes_flatten: int = 0
+
     max_query_len: int
     query_start_loc: torch.Tensor
     max_seq_len: int
@@ -231,6 +246,11 @@ class AttentionFLMetadataBuilder(AttentionMetadataBuilder[AttentionFLMetadata]):
     # TODO(luka, lucas): audit FA2 as part of:
     #  https://github.com/vllm-project/vllm/issues/22945
     _cudagraph_support = AttentionCGSupport.UNIFORM_BATCH
+    
+    # Does this backend/builder reorder the batch?
+    # If not, set this to None. Otherwise set it to the query
+    # length that will be pulled into the front of the batch.
+    reorder_batch_threshold: ClassVar[int] = 1
 
     def __init__(
         self,
@@ -255,6 +275,19 @@ class AttentionFLMetadataBuilder(AttentionMetadataBuilder[AttentionFLMetadata]):
 
         self.max_num_splits = 0  # No upper bound on the number of splits.
         self.aot_schedule = False  #get_flash_attn_version() == 3
+        
+        self.speculative_config = vllm_config.speculative_config
+        self.decode_threshold = 1
+        if self.speculative_config:
+            spec_token_num = self.speculative_config.num_speculative_tokens
+            self.decode_threshold += spec_token_num
+            assert self.decode_threshold <= 16, (
+                f"decode_threshold exceeded \
+                npu_fused_infer_attention_score TND layout's limit of 16, \
+                got {self.decode_threshold}"
+            )
+            
+        AttentionFLMetadataBuilder.reorder_batch_threshold = self.decode_threshold
 
         try:
             from vllm.distributed.parallel_state import get_dcp_group
@@ -296,7 +329,7 @@ class AttentionFLMetadataBuilder(AttentionMetadataBuilder[AttentionFLMetadata]):
     def build(
         self,
         common_prefix_len: int,
-        common_attn_metadata: CommonAttentionMetadata,
+        common_attn_metadata: FLCommonAttentionMetadata,
         fast_build: bool = False,
     ) -> AttentionFLMetadata:
         """
@@ -313,8 +346,14 @@ class AttentionFLMetadataBuilder(AttentionMetadataBuilder[AttentionFLMetadata]):
         slot_mapping = common_attn_metadata.slot_mapping
         causal = common_attn_metadata.causal
 
+        num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens = split_decodes_and_prefills(
+            common_attn_metadata, decode_threshold=self.decode_threshold
+        )
+
         # the overhead of the aot schedule is not worth it for spec-decode
         aot_schedule = self.aot_schedule and not fast_build
+
+        attn_state = common_attn_metadata.attn_state
 
         if self.aot_sliding_window is None:
             self.aot_sliding_window = (-1, -1)
@@ -400,6 +439,7 @@ class AttentionFLMetadataBuilder(AttentionMetadataBuilder[AttentionFLMetadata]):
 
         attn_metadata = AttentionFLMetadata(
             num_actual_tokens=num_actual_tokens,
+            num_decode_tokens=num_decode_tokens,
             max_query_len=max_query_len,
             query_start_loc=query_start_loc,
             max_seq_len=max_seq_len,
@@ -414,6 +454,9 @@ class AttentionFLMetadataBuilder(AttentionMetadataBuilder[AttentionFLMetadata]):
             cu_prefix_query_lens=cu_prefix_query_lens,
             prefix_kv_lens=prefix_kv_lens,
             suffix_kv_lens=suffix_kv_lens,
+            attn_state=attn_state,
+            num_prefills=num_prefills,
+            num_decodes=num_decodes,
             prefix_scheduler_metadata=prefix_scheduler_metadata,
             max_num_splits=max_num_splits,
             causal=causal,

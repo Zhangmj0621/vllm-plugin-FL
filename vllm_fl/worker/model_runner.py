@@ -99,6 +99,12 @@ from vllm.utils.nvtx_pytorch_hooks import PytHooks
 from vllm.utils.platform_utils import is_pin_memory_available
 
 from vllm.platforms import current_platform
+
+from vllm_fl.vllmfl_config import get_vllm_fl_config
+from vllm_fl.dispatch.backends.flaggems.impl.utils import FLCommonAttentionMetadata
+from vllm_fl.dispatch.backends.flaggems.impl.attention import AttentionFLState
+
+
 if current_platform.dist_backend == "flagcx":
     @contextmanager
     def graph_capture(device: torch.device):
@@ -215,6 +221,7 @@ if TYPE_CHECKING:
     from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
 
 from vllm_fl.compilation.graph import GraphWrapper
+from vllm_fl.ops.rotary_embedding import set_cos_and_sin, update_cos_sin
 
 logger = init_logger(__name__)
 
@@ -324,7 +331,7 @@ class ExecuteModelState(NamedTuple):
     scheduler_output: "SchedulerOutput"
     logits: torch.Tensor
     spec_decode_metadata: SpecDecodeMetadata | None
-    spec_decode_common_attn_metadata: CommonAttentionMetadata | None
+    spec_decode_common_attn_metadata: FLCommonAttentionMetadata | None
     hidden_states: torch.Tensor
     sample_hidden_states: torch.Tensor
     aux_hidden_states: list[torch.Tensor] | None
@@ -480,6 +487,8 @@ class ModelRunnerFL(
         # that are currently in the prefill phase.
         self.num_prompt_logprobs: dict[str, int] = {}
         self.comm_stream = current_platform.torch_device_fn.Stream()
+
+        set_cos_and_sin(vllm_config, self.max_num_reqs, self.uniform_decode_query_len, self.dtype, self.device)
 
         # Input Batch
         # NOTE(Chen): Ideally, we should initialize the input batch inside
@@ -1373,6 +1382,24 @@ class ModelRunnerFL(
         # E.g., [2, 5, 3] -> [0, 0, 1, 1, 1, 1, 1, 2, 2, 2]
         req_indices = np.repeat(self.arange_np[:num_reqs], num_scheduled_tokens)
 
+        # Get the attention state.
+        if not scheduler_output.scheduled_spec_decode_tokens:
+            num_valid_tokens = num_scheduled_tokens
+        else:
+            num_valid_tokens = np.array(
+                [
+                    scheduler_output.num_scheduled_tokens[i]
+                    - len(scheduler_output.scheduled_spec_decode_tokens.get(i, []))
+                    for i in self.input_batch.req_ids
+                ],
+                dtype=np.int32,
+            )
+        attn_state = self._build_attn_state(num_reqs, num_scheduled_tokens, num_valid_tokens)
+
+        # Determine if it's a splitfuse batch
+        with_prefill = attn_state not in [AttentionFLState.DecodeOnly, AttentionFLState.SpecDecoding]
+        self.with_prefill = with_prefill
+
         # cu_num_tokens: [2, 5, 3] -> [2, 7, 10]
         # arange: [0, 1, 0, 1, 2, 3, 4, 0, 1, 2]
         cu_num_tokens, arange = self._get_cumsum_and_arange(num_scheduled_tokens)
@@ -1643,7 +1670,7 @@ class ModelRunnerFL(
             return blk_table_tensor, slot_mapping
 
         block_table_gid_0, slot_mapping_gid_0 = _get_block_table_and_slot_mapping(0)
-        cm_base = CommonAttentionMetadata(
+        cm_base = FLCommonAttentionMetadata(
             query_start_loc=self.query_start_loc.gpu[: num_reqs_padded + 1],
             query_start_loc_cpu=self.query_start_loc.cpu[: num_reqs_padded + 1],
             seq_lens=self.seq_lens.gpu[:num_reqs_padded],
@@ -1658,6 +1685,12 @@ class ModelRunnerFL(
             block_table_tensor=block_table_gid_0,
             slot_mapping=slot_mapping_gid_0,
             causal=True,
+            num_input_tokens=num_tokens_padded,
+            actual_seq_lengths_q=self.actual_seq_lengths_q,
+            positions=self.positions.gpu,
+            attn_state=self.attn_state,
+            decode_token_per_req=self.decode_token_per_req,
+            prefill_context_parallel_metadata=self.long_seq_metadata,
         )
 
         if self.dcp_world_size > 1:
@@ -1826,7 +1859,6 @@ class ModelRunnerFL(
                 use_cascade_attn |= cascade_attn_prefix_len > 0
 
         return cascade_attn_prefix_lens if use_cascade_attn else None
-
 
     def _compute_cascade_attn_prefix_len(
         self,
@@ -2021,6 +2053,37 @@ class ModelRunnerFL(
                 )
 
                 xdrope_pos_ptr += completion_part_len
+
+    def _build_attn_state(self, num_reqs, num_scheduled_tokens, num_valid_tokens):
+        if np.all(self.input_batch.num_computed_tokens_cpu[:num_reqs] == 0):
+            attn_state = AttentionFLState.PrefillNoCache
+        # We assume it is the decode stage, where prefill occurs but only one token is not hit in cache.
+        elif np.all(num_scheduled_tokens == 1):
+            attn_state = AttentionFLState.DecodeOnly
+            if self.speculative_config and self.speculative_config.method == "mtp":
+                # SpecDecoding now supports seq_len=1 and seq_len=2
+                # In Prefilling Decoding Disaggregation scenario, SpecDecoding need to supports seq_len=1
+                attn_state = AttentionFLState.SpecDecoding
+        # Speculative decoding.
+        elif np.all(num_valid_tokens == 1):
+            if self.speculative_config:
+                attn_state = AttentionFLState.SpecDecoding
+            else:
+                attn_state = AttentionFLState.ChunkedPrefill
+        # splitfuse
+        elif self.scheduler_config.enable_chunked_prefill:
+            attn_state = AttentionFLState.ChunkedPrefill
+        else:
+            attn_state = AttentionFLState.PrefillCacheHit
+
+        # For the overlay of the PCP feature and the eagle3, attn_state needs to be recovered
+        # TODO: Resolved the conflict between the sunset of attn_state and the PCP that requires this interface.
+        if attn_state == AttentionFLState.SpecDecoding and self.speculative_config.method != "mtp":
+            self.attn_state = AttentionFLState.ChunkedPrefill  # type: ignore
+        else:
+            self.attn_state = attn_state  # type: ignore
+
+        return attn_state
 
     def _calc_spec_decode_metadata(
         self,
@@ -3114,6 +3177,9 @@ class ModelRunnerFL(
             ) = self._preprocess(
                 scheduler_output, num_tokens_padded, intermediate_tensors
             )
+
+            # update global cos, sin
+            update_cos_sin(positions)
 
         # Set cudagraph mode to none if calc_kv_scales is true.
         # KV scales calculation involves dynamic operations that are incompatible
@@ -4245,6 +4311,9 @@ class ModelRunnerFL(
                 positions = self.xdrope_positions.gpu[:, :num_tokens_padded]
             else:
                 positions = self.positions.gpu[:num_tokens_padded]
+                
+            # update global cos, sin
+            update_cos_sin(positions)
 
             if get_pp_group().is_first_rank:
                 intermediate_tensors = None

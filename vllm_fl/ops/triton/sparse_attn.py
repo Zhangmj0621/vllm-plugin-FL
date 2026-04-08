@@ -43,7 +43,8 @@ def triton_paged_indexer_k_tiled(
     stride_nb,          # kv_cache: stride over num_blocks dim
     stride_bs,          # kv_cache: stride over block_size dim
     stride_hd,          # kv_cache: stride over head_dim dim
-    stride_bt,          # block_table: stride over max_blocks_per_seq dim
+    stride_btm,         # block_table: stride over sequence dim
+    stride_btn,         # block_table: stride over max_blocks_per_seq dim
     stride_wh,          # weights stride
     stride_lm,          # logits: stride over Q dim
     stride_ln,          # logits: stride over K dim
@@ -107,7 +108,7 @@ def triton_paged_indexer_k_tiled(
 
         # Block-table lookup: cache_blk[b] = block_table[seq_id, block_idx[b]]
         cache_blk = tl.load(
-            block_table_ptr + seq_id * stride_bt + block_idx,
+            block_table_ptr + seq_id * stride_btm + block_idx * stride_btn,
             mask_bk, other=0,
         )  # [BK]
 
@@ -197,7 +198,8 @@ def triton_paged_indexer_k_tiled_interface(
         kv_cache.stride(0),    # stride_nb
         kv_cache.stride(1),    # stride_bs
         kv_cache.stride(3),    # stride_hd
-        block_table.stride(1), # stride_bt
+        block_table.stride(0), # stride_btm
+        block_table.stride(1), # stride_btn
         w_flat.stride(0),      # stride_wh
         logits.stride(0),      # stride_lm
         logits.stride(1),      # stride_ln
@@ -244,7 +246,8 @@ def triton_sparse_mla_fwd_paged(
     stride_rnb,         # kv_rope: stride over num_blocks dim
     stride_rbs,         # kv_rope: stride over block_size dim
     stride_rhd,         # kv_rope: stride over head_dim dim
-    stride_bt,          # block_table: stride over MBK dim
+    stride_btm,         # block_table: stride over sequence dim
+    stride_btn,         # block_table: stride over MBK dim
     stride_tm,          # indices: stride over Q dim
     stride_tt,          # indices: stride over K dim
     stride_om,          # output: stride over Q dim
@@ -306,7 +309,7 @@ def triton_sparse_mla_fwd_paged(
         tok_in_blk = kv_ids_c % block_size           # [BK]
 
         cache_blk = tl.load(
-            block_table_ptr + seq_id * stride_bt + block_idx,
+            block_table_ptr + seq_id * stride_btm + block_idx * stride_btn,
             mask_ids, other=0,
         )  # [BK]
 
@@ -424,7 +427,8 @@ def triton_sparse_mla_fwd_paged_interface(
         kv_rope.stride(0),      # stride_rnb
         kv_rope.stride(1),      # stride_rbs
         kv_rope.stride(3),      # stride_rhd
-        block_table.stride(1),  # stride_bt
+        block_table.stride(0),  # stride_btm
+        block_table.stride(1),  # stride_btn
         indices.stride(0),      # stride_tm
         indices.stride(1),      # stride_tt
         output.stride(0),       # stride_om

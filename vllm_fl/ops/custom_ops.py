@@ -9,6 +9,7 @@ from .activation import *  # noqa F403 F401
 from .rotary_embedding import *  # noqa F403 F401
 from .fused_moe import *  # noqa F403 F401
 from .mla import *  # noqa F403 F401
+from .rotary_embedding import FLDeepseekScalingRotaryEmbedding
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +29,12 @@ OOT_OPS = {
         "UnquantizedFusedMoEMethod",
     ),
     "MultiHeadLatentAttentionWrapper": (
-        FLMultiHeadLatentAttention, # noqa F405
+        FLMultiHeadLatentAttention,  # noqa F405
         "MultiHeadLatentAttentionWrapper",
+    ),
+    "DeepseekScalingRotaryEmbedding": (
+        FLDeepseekScalingRotaryEmbedding, 
+        "DeepseekScalingRotaryEmbedding"
     ),
 }
 

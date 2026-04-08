@@ -2,7 +2,7 @@
 
 import json
 import os
-from typing import Optional, Tuple, Any
+from typing import Optional, Tuple, Any, TYPE_CHECKING
 import torch
 from functools import lru_cache
 
@@ -10,7 +10,14 @@ import flag_gems
 from flag_gems.runtime.backend.device import DeviceDetector
 from flag_gems.runtime import backend
 
+if TYPE_CHECKING:
+    from vllm.config import VllmConfig
+else:
+    VllmConfig = None
+
 _OP_CONFIG: Optional[dict[str, str]] = None
+_HAS_ROPE = None
+_IS_VL_MODEL = None
 
 
 def use_flaggems(default: bool = True) -> bool:
@@ -275,6 +282,17 @@ def dispose_layer(layer: Any):
         if isinstance(attr_value, torch.Tensor):
             dispose_tensor(attr_value)
 
+@lru_cache(maxsize=1)
+def enable_cp() -> bool:
+    """True when prefill or decode context parallelism (PCP/DCP) is active."""
+    from vllm.config import get_current_vllm_config
+    parallel_config = get_current_vllm_config().parallel_config
+    return (
+        getattr(parallel_config, "prefill_context_parallel_size", 1) > 1
+        or getattr(parallel_config, "decode_context_parallel_size", 1) > 1
+    )
+
+
 # TODO: Temporarily use dsa-cp at default.
 # and subsequent updates will introduce new interfaces.
 @lru_cache(maxsize=1)
@@ -307,6 +325,37 @@ def enable_dsa_cp_with_o_proj_tp() -> bool:
     # if is PD mix stage, using original TP o_proj weight, and also need to
     # full gather for o_proj weight for prefill stage.
     return vllm_config.kv_transfer_config is None
+
+
+def _round_up(x: int, align: int):
+    # round up x to align, for example, if align is 16, x will be rounded up to 16, 32, 48, etc.
+    # input: 15, 16 -> output: 16
+    # input: 17, 16 -> output: 32
+    # input: 30, 16 -> output: 32
+    # input: 33, 16 -> output: 48
+    # ...
+    return (x + align - 1) // align * align
+
+def is_vl_model(vllm_config: VllmConfig):
+    """Checks if the model is a VL model by config"""
+    global _IS_VL_MODEL
+    if _IS_VL_MODEL is None and vllm_config and vllm_config.model_config:
+        hf_config = vllm_config.model_config.hf_config.to_dict()
+        if "thinker_config" in hf_config:
+            # Qwen-Omni-thinker models
+            _IS_VL_MODEL = True
+        else:
+            _IS_VL_MODEL = "vision_config" in hf_config
+    return _IS_VL_MODEL
+
+def has_rope(vllm_config: VllmConfig):
+    """Checks if the model uses rope."""
+    global _HAS_ROPE
+    if _HAS_ROPE is None and vllm_config and vllm_config.model_config:
+        hf_config = vllm_config.model_config.hf_text_config.to_dict()
+        _HAS_ROPE = "rope_parameters" in hf_config
+    return _HAS_ROPE
+
 
 if __name__ == "__main__":
     device = DeviceInfo()
