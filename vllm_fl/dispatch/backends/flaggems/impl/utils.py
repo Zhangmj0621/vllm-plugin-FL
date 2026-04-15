@@ -39,6 +39,9 @@ class FLCommonAttentionMetadata(CommonAttentionMetadata):
     # Current attention state (e.g., ChunkedPrefill, DecodeOnly).
     attn_state: Any = None
 
+    # Optional metadata for prefill context parallel path.
+    prefill_context_parallel_metadata: Any = None
+
     # Padding size for graph capture, -1 means not in graph mode.
     graph_pad_size: int = -1
 
@@ -67,6 +70,7 @@ class FLCommonAttentionMetadata(CommonAttentionMetadata):
             actual_seq_lengths_q=self.actual_seq_lengths_q[:num_actual_tokens],
             positions=self.positions,
             attn_state=self.attn_state,
+            prefill_context_parallel_metadata=self.prefill_context_parallel_metadata,
             graph_pad_size=-1,  # It should be -1 when not run in fullgraph mode.
             num_input_tokens=self.num_input_tokens,
             max_seq_len=self.max_seq_len,

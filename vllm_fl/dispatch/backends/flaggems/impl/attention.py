@@ -51,7 +51,6 @@ from vllm_fl.dispatch.backends.flaggems.impl.utils import (
 logger = init_logger(__name__)
 
 
-
 class AttentionFLBackend(AttentionBackend):
     accept_output_buffer: bool = True
     supported_dtypes: ClassVar[list[torch.dtype]] = [torch.float16, torch.bfloat16]
@@ -176,17 +175,6 @@ class AttentionFLMetadata:
     # |-------------------- seq_len ---------------------|
     #                                   |-- query_len ---|
 
-    # Current state of this attention run.
-    attn_state: AttentionFLState = AttentionFLState.ChunkedPrefill
-
-    # Number of tokens excluding padding.
-    num_actual_tokens_pcp_padded: int = 0
-    num_actual_tokens: int = 0
-    num_decode_tokens: int = 0
-    num_prefills: int = 0
-    num_decodes: int = 0
-    num_decodes_flatten: int = 0
-
     max_query_len: int
     query_start_loc: torch.Tensor
     max_seq_len: int
@@ -200,6 +188,17 @@ class AttentionFLMetadata:
     cu_prefix_query_lens: torch.Tensor | None
     prefix_kv_lens: torch.Tensor | None
     suffix_kv_lens: torch.Tensor | None
+
+    # Current state of this attention run.
+    attn_state: AttentionFLState = AttentionFLState.ChunkedPrefill
+
+    # Number of tokens excluding padding.
+    num_actual_tokens_pcp_padded: int = 0
+    num_actual_tokens: int = 0
+    num_decode_tokens: int = 0
+    num_prefills: int = 0
+    num_decodes: int = 0
+    num_decodes_flatten: int = 0
 
     # For GQA DCP
     max_dcp_context_kv_len: int | None = None

@@ -5,11 +5,19 @@ from torch import nn
 from vllm.config import CacheConfig, get_current_vllm_config
 from vllm.distributed import get_tensor_model_parallel_world_size
 from vllm.forward_context import ForwardContext, get_forward_context
-from vllm.attention.layers import MLAAttention
+try:
+    from vllm.attention.layer import MLAAttention  # type: ignore
+except Exception:  # pragma: no cover
+    from vllm.model_executor.layers.attention import MLAAttention  # type: ignore
 from vllm.model_executor.layers.mla import MLAModules, MultiHeadLatentAttentionWrapper
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.utils.torch_utils import direct_register_custom_op
-from vllm.v1.attention.backend import AttentionMetadata  # type: ignore
+try:
+    # Newer vLLM layout (v1 engine).
+    from vllm.v1.attention.backend import AttentionMetadata  # type: ignore
+except ModuleNotFoundError:
+    # vLLM v0.13.0 exports the base type here.
+    from vllm.attention.backends.abstract import AttentionMetadata  # type: ignore
 
 from vllm_fl.vllmfl_config import get_vllm_fl_config
 
@@ -104,7 +112,7 @@ class FLMultiHeadLatentAttention(MultiHeadLatentAttentionWrapper):
         original_process_weights = self.mla_attn.process_weights_after_loading
 
         def wrapped_process_weights(act_dtype: torch.dtype):
-            from vllm_fl.dispatch.backends.flaggems.impl import FLSFAImpl
+            from vllm_fl.dispatch.backends.flaggems.impl.sfa import FLSFAImpl
 
             if not isinstance(self.mla_attn.impl, FLSFAImpl):
                 original_process_weights(act_dtype)
@@ -147,7 +155,8 @@ def mla_forward(
         attn_metadata = forward_context.attn_metadata
     kv_cache = self.mla_attn.kv_cache[forward_context.virtual_engine]
     # TODO: we now don't support cache config
-    assert self.mla_attn.cache_config is None, "Cache config is not supported in FL now."
+    cache_cfg = getattr(self.mla_attn, "cache_config", None)
+    assert cache_cfg is None, "Cache config is not supported in FL now."
     self.mla_attn.impl.forward(
         self.mla_attn.layer_name,
         hidden_states,

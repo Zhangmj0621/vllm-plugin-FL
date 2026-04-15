@@ -480,6 +480,8 @@ class ModelRunnerFL(
         self.num_spec_tokens = 0
         if self.speculative_config:
             self.num_spec_tokens = self.speculative_config.num_speculative_tokens
+            
+        self.uniform_decode_query_len = 1 + self.num_spec_tokens
 
         # Request states.
         self.requests: dict[str, CachedRequestState] = {}
@@ -623,8 +625,6 @@ class ModelRunnerFL(
             self.kv_sharing_fast_prefill_logits_indices = torch.zeros(
                 self.max_num_tokens, dtype=torch.int32, device=self.device
             )
-
-        self.uniform_decode_query_len = 1 + self.num_spec_tokens
 
         # Cudagraph dispatcher for runtime cudagraph dispatching.
         self.cudagraph_dispatcher = CudagraphDispatcher(self.vllm_config)
@@ -1686,11 +1686,11 @@ class ModelRunnerFL(
             slot_mapping=slot_mapping_gid_0,
             causal=True,
             num_input_tokens=num_tokens_padded,
-            actual_seq_lengths_q=self.actual_seq_lengths_q,
+            actual_seq_lengths_q=self.query_start_loc.cpu[1 : num_reqs_padded + 1].tolist(),
             positions=self.positions.gpu,
-            attn_state=self.attn_state,
-            decode_token_per_req=self.decode_token_per_req,
-            prefill_context_parallel_metadata=self.long_seq_metadata,
+            attn_state=getattr(self, "attn_state", None),
+            decode_token_per_req=getattr(self, "decode_token_per_req", 1),
+            prefill_context_parallel_metadata=getattr(self, "long_seq_metadata", None),
         )
 
         if self.dcp_world_size > 1:

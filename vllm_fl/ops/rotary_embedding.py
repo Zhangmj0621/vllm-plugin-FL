@@ -209,7 +209,7 @@ class FLDeepseekScalingRotaryEmbedding(DeepseekScalingRotaryEmbedding):
             * attn_factor
         )
         super().__init__(
-            head_size, rotary_dim, max_position_embeddings, base, is_neox_style, dtype
+            head_size, rotary_dim, max_position_embeddings, base, is_neox_style, scaling_factor, dtype
         )
 
         # NOTE: Reorder sin and cos cache

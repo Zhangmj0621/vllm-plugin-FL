@@ -3,7 +3,19 @@
 import torch
 from vllm.triton_utils import tl, triton
 
-from vllm_ascend.ops.triton.triton_utils import get_vectorcore_num
+try:
+    # Ascend-specific helper. Not available on CUDA/H100 nodes.
+    from vllm_ascend.ops.triton.triton_utils import get_vectorcore_num  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    def get_vectorcore_num() -> int:
+        # Conservative default for CUDA: number of SMs is a reasonable upper bound
+        # for how many independent program instances to launch.
+        if torch.cuda.is_available():
+            try:
+                return int(torch.cuda.get_device_properties(0).multi_processor_count)
+            except Exception:
+                return 1
+        return 1
 
 
 # TODO(whx-sjtu): Add tiling of n_q_head and n_kv_head to support more models.

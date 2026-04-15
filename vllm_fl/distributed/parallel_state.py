@@ -1,5 +1,5 @@
 import torch
-from type import Optional
+from typing import Optional
 
 from vllm.logger import logger
 from vllm.config import ParallelConfig, get_current_vllm_config

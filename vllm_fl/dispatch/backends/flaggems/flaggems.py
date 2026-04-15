@@ -138,10 +138,9 @@ class FlagGemsBackend(Backend):
                 "Falling back to vendor implementation."
             )
 
-        if use_mla:
-            raise NotImplementedError("NOT support mla now!")
-
-        if use_sparse:
-            raise ValueError("use_sparse=True requires use_mla=True.")  
+        if use_mla and use_sparse:
+            return "vllm_fl.dispatch.backends.flaggems.impl.sfa.FLSFABackend"
+        elif use_mla:
+            raise NotImplementedError("NOT support mla now!") 
 
         return AttentionBackendEnum.TRITON_ATTN.get_path()
