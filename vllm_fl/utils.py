@@ -293,17 +293,33 @@ def enable_cp() -> bool:
     )
 
 
-# TODO: Temporarily use dsa-cp at default.
-# and subsequent updates will introduce new interfaces.
 @lru_cache(maxsize=1)
-def enable_dsa_cp() -> bool:
+def _is_dsa_cp_model() -> bool:
+    """Check if model is DeepSeek v3.2 (has index_topk)."""
     from vllm.config import get_current_vllm_config
 
     vllm_config = get_current_vllm_config()
-    is_ds_v32 = hasattr(vllm_config.model_config, "hf_text_config") and hasattr(
+    return hasattr(vllm_config.model_config, "hf_text_config") and hasattr(
         vllm_config.model_config.hf_text_config, "index_topk"
     )
-    return bool(is_ds_v32)
+
+
+@lru_cache(maxsize=1)
+def enable_sp() -> bool:
+    """SP is required for DSA-CP: replaces all_reduce with reduce_scatter
+    on row-parallel outputs so hidden_states is num_tokens/tp_size."""
+    from vllm.config import get_current_vllm_config
+
+    if not _is_dsa_cp_model():
+        return False
+    vllm_config = get_current_vllm_config()
+    tp_size = vllm_config.parallel_config.tensor_parallel_size
+    return tp_size > 1
+
+
+@lru_cache(maxsize=1)
+def enable_dsa_cp() -> bool:
+    return bool(_is_dsa_cp_model() and enable_sp())
 
 
 @lru_cache(maxsize=1)

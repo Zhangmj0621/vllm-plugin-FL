@@ -2550,6 +2550,9 @@ class ModelRunnerFL(
         tp_size = self.vllm_config.parallel_config.tensor_parallel_size
         if self.compilation_config.pass_config.enable_sp and tp_size > 1:
             return round_up(num_scheduled_tokens, tp_size)
+        from vllm_fl.utils import enable_sp as fl_enable_sp
+        if fl_enable_sp() and tp_size > 1:
+            return round_up(num_scheduled_tokens, tp_size)
         return num_scheduled_tokens
 
     def _preprocess(
@@ -2848,22 +2851,19 @@ class ModelRunnerFL(
         inputs_embeds: torch.Tensor | None = None,
         **model_kwargs: dict[str, Any],
     ) -> Any:
-        """Helper method to call the model forward pass.
+        from vllm_fl.utils import enable_sp as fl_enable_sp
+        from vllm_fl.ops.register_custom_ops import set_sp_state
 
-        This method can be overridden by subclasses for model execution.
-        Motivation: We can inspect only this method versus
-        the whole execute_model, which has additional logic.
+        num_tokens = input_ids.shape[0] if input_ids is not None else (
+            inputs_embeds.shape[0] if inputs_embeds is not None else 0
+        )
+        tp_size = self.vllm_config.parallel_config.tensor_parallel_size
+        if fl_enable_sp() and tp_size > 1 and num_tokens > 0:
+            pad_size = (tp_size - (num_tokens % tp_size)) % tp_size
+            set_sp_state(True, pad_size)
+        else:
+            set_sp_state(False, 0)
 
-        Args:
-            input_ids: Input token IDs
-            positions: Token positions
-            intermediate_tensors: Tensors from previous pipeline stages
-            inputs_embeds: Input embeddings (alternative to input_ids)
-            **model_kwargs: Additional model arguments
-
-        Returns:
-            Model output tensor
-        """
         return self.model(
             input_ids=input_ids,
             positions=positions,

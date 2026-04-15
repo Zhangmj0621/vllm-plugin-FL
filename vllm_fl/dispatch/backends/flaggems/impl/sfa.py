@@ -23,9 +23,15 @@ from vllm.platforms import current_platform
 from vllm.triton_utils import HAS_TRITON
 from vllm.distributed.parallel_state import is_global_first_rank
 
-from vllm.v1.attention.backend import AttentionBackend, AttentionCGSupport, MLAAttentionImpl  # type: ignore
+from vllm.attention.backends.abstract import AttentionBackend, MLAAttentionImpl
+from vllm.v1.attention.backends.utils import AttentionCGSupport
 from vllm.v1.kv_cache_interface import AttentionSpec
-from vllm.v1.attention.backends.mla import dynamic_per_batched_tensor_quant
+try:
+    from vllm.v1.attention.backends.mla.common import (  # type: ignore
+        dynamic_per_batched_tensor_quant,
+    )
+except Exception:  # pragma: no cover
+    from vllm.v1.attention.backends.mla import dynamic_per_batched_tensor_quant  # type: ignore
 from vllm._aiter_ops import rocm_aiter_ops
 
 from vllm_fl import envs
@@ -80,7 +86,7 @@ class FLSFABackend(AttentionBackend):
 
     @staticmethod
     def get_kv_cache_shape(
-        num_blocks: int, block_size: int, num_kv_heads: int, head_size: int
+        num_blocks: int, block_size: int, num_kv_heads: int, head_size: int, cache_dtype_str: str = "auto",
     ) -> tuple[int, ...]:
         return (num_blocks, block_size, num_kv_heads, head_size)
 
@@ -93,7 +99,8 @@ class FLSFABackend(AttentionBackend):
 
     @staticmethod
     def get_supported_kernel_block_sizes() -> list[int]:
-        return [128]
+        # return [128]
+        return [32, 64, 128]
 
 
 @dataclass
@@ -297,6 +304,8 @@ class FLSFAMetadataBuilder(MLACommonMetadataBuilder[FLSFAMetadata]):
                 local_start=local_start,
                 local_end=local_end,
                 local_end_with_pad=local_end_with_pad,
+                pad_size=pad_size,
+                local_pad_size=local_end_with_pad - local_end,
                 slot_mapping_cp=slot_mapping_cp,
                 actual_seq_lengths_query=actual_seq_lengths_query,
                 actual_seq_lengths_key=actual_seq_lengths_key,
@@ -363,6 +372,15 @@ class FLSFAImpl(MLAAttentionImpl):
         self.scale = float(scale)
         self.num_kv_heads = num_kv_heads
         self.kv_cache_dtype = kv_cache_dtype
+
+        # vLLM's MLA common impl uses this flag to guard ROCm Aiter fp8-bmm
+        # specific weight processing. On CUDA platforms this should be False.
+        try:
+            self.is_aiter_triton_fp8_bmm_enabled = bool(
+                getattr(rocm_aiter_ops, "is_fp8bmm_enabled", lambda: False)()
+            )
+        except Exception:
+            self.is_aiter_triton_fp8_bmm_enabled = False
 
         # MLA Args
         self.q_lora_rank = kwargs["q_lora_rank"]
@@ -466,17 +484,17 @@ class FLSFAImpl(MLAAttentionImpl):
         kv_b_proj_weight = get_and_maybe_dequant_weights(self.kv_b_proj).T
         assert kv_b_proj_weight.shape == (
             self.kv_lora_rank,
-            self.num_heads * (self.qk_nope_head_dim + self.v_head_dim),
+            self.local_num_heads * (self.qk_nope_head_dim + self.v_head_dim),
         ), (
             f"{kv_b_proj_weight.shape=}, "
             f"{self.kv_lora_rank=}, "
-            f"{self.num_heads=}, "
+            f"{self.local_num_heads=}, "
             f"{self.qk_nope_head_dim=}, "
             f"{self.v_head_dim=}"
         )
         kv_b_proj_weight = kv_b_proj_weight.view(
             self.kv_lora_rank,
-            self.num_heads,
+            self.local_num_heads,
             self.qk_nope_head_dim + self.v_head_dim,
         )
 
@@ -713,23 +731,23 @@ class FLSFAImpl(MLAAttentionImpl):
     def _v_up_proj(self, x: torch.Tensor):
         out: torch.Tensor = None
         # Convert from (B, N, L) to (N, B, L)
-        x = x.view(-1, self.num_heads, self.kv_lora_rank).transpose(0, 1)
+        x = x.view(-1, self.local_num_heads, self.kv_lora_rank).transpose(0, 1)
 
         if self.is_aiter_triton_fp8_bmm_enabled:
-            out = out.view(-1, self.num_heads, self.v_head_dim)
+            out = out.view(-1, self.local_num_heads, self.v_head_dim)
             # Multiply + Transpose (N, B, L) x (N, L, V)->(N, B, V)->(B, N, V)
             x = rocm_aiter_ops.triton_fp8_bmm(
                 x, self.W_V, self.W_V_scale, group_size=128, transpose_bm=True, YQ=out
             )
         else:
             # Convert from (B, N * V) to (N, B, V)
-            out = out.view(-1, self.num_heads, self.v_head_dim).transpose(0, 1)
+            out = out.view(-1, self.local_num_heads, self.v_head_dim).transpose(0, 1)
 
             # Multiply (N, B, L) x (N, L, V) -> (N, B, V)
             torch.bmm(x, self.W_UV, out=out)  # Reuse "out" to make it "hot"
 
             # Convert from (N, B, V) to (B, N * V)
-            out = out.transpose(0, 1).reshape(-1, self.num_heads * self.v_head_dim)
+            out = out.transpose(0, 1).reshape(-1, self.local_num_heads * self.v_head_dim)
         return out
 
     def indexer_select_pre_process(
